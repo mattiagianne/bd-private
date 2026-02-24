@@ -31,6 +31,26 @@ const CONFIG = {
   POLL_MAX_ATTEMPTS: 20    // max 60 secondi di attesa
 };
 
+// Tier pricing OpenAPI.it (verificare con documentazione/ufficio commerciale)
+var PRICING = [
+  { min: 0, max: 299, price: 4.00, label: "PAYG" },
+  { min: 300, max: 999, price: 3.00, label: "300" },
+  { min: 1000, max: 4999, price: 1.50, label: "1K" },
+  { min: 5000, max: 9999, price: 0.70, label: "5K" },
+  { min: 10000, max: 49999, price: 0.55, label: "10K" },
+  { min: 50000, max: 99999, price: 0.30, label: "50K" },
+  { min: 100000, max: 499999, price: 0.20, label: "100K" },
+  { min: 500000, max: Infinity, price: 0.10, label: "500K" }
+];
+
+// Aree predefinite per griglia (bounds: north, south, west, east)
+var AREE = {
+  milano_comune:   { north: 45.536, south: 45.390, west: 9.065, east: 9.278 },
+  milano_provincia: { north: 45.650, south: 45.300, west: 8.850, east: 9.550 },
+  pisa_comune:     { north: 43.775, south: 43.600, west: 10.280, east: 10.470 },
+  pisa_provincia:  { north: 43.850, south: 43.200, west: 10.050, east: 10.950 }
+};
+
 // ============================================================
 // MENU PERSONALIZZATO
 // ============================================================
@@ -39,6 +59,8 @@ function onOpen() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu("🏠 OpenAPI Real Estate")
     .addItem("1. Cerca Compravendite", "cercaCompravendite")
+    .addItem("1b. Cerca Compravendite (griglia)", "cercaCompravenditeGriglia")
+    .addItem("1c. Stima griglia (solo costo)", "stimaGriglia")
     .addItem("2. Arricchisci con Catasto (riga selezionata)", "arricchisciCatasto")
     .addItem("3. Ricerca Persona (CF + Provincia)", "ricercaPersona")
     .addSeparator()
@@ -47,6 +69,7 @@ function onOpen() {
     .addItem("⚙ Crea fogli di lavoro", "setupFogli")
     .addItem("🔌 Test Real Estate", "testConnessione")
     .addItem("🔌 Test Catasto", "testCatasto")
+    .addItem("📊 Report costi API", "reportCostiAPI")
     .addToUi();
 }
 
@@ -119,12 +142,21 @@ function setupFogli() {
     ["Mese Inizio", ""],
     ["Anno Fine", ""],
     ["Mese Fine", ""],
+    ["--- Griglia (Cerca con griglia) ---", ""],
+    ["Area griglia", "milano_comune"],
+    ["Lat Nord (griglia)", ""],
+    ["Lat Sud (griglia)", ""],
+    ["Lon Ovest (griglia)", ""],
+    ["Lon Est (griglia)", ""],
     ["--- Ricerca Persona ---", ""],
     ["CF / P.IVA", ""],
     ["Provincia", "MI"],
     ["Tipo Catasto", "F"]
   ];
   sh.getRange(2, 1, configData.length, 2).setValues(configData);
+  // Nota filtri opzionali (riga dopo i dati)
+  const noteRow = configData.length + 2;
+  sh.getRange(noteRow, 1, noteRow, 2).merge().setValue("Nota: Anno/Mese e Importi sono opzionali. Vuoti = default API.").setFontStyle("italic").setFontColor("#666666");
   // Forza formato testo sulle coordinate per evitare problemi di locale
   sh.getRange("B2").setNumberFormat("0.0000");
   sh.getRange("B3").setNumberFormat("0.0000");
@@ -142,12 +174,81 @@ function setupFogli() {
 // 1. CERCA COMPRAVENDITE (POST /IT-rmv)
 // ============================================================
 
+/**
+ * Valida parametri di ricerca (anno/mese, importi) prima della chiamata API.
+ * @return {{ ok: boolean, message: string }}
+ */
+function validazioneFiltriRicerca(params) {
+  const yearMin = 2010;
+  const yearMax = 2030;
+  const ay = params.annoInizio !== "" && params.annoInizio != null ? parseInt(params.annoInizio, 10) : null;
+  const am = params.meseInizio !== "" && params.meseInizio != null ? parseInt(params.meseInizio, 10) : null;
+  const ey = params.annoFine !== "" && params.annoFine != null ? parseInt(params.annoFine, 10) : null;
+  const em = params.meseFine !== "" && params.meseFine != null ? parseInt(params.meseFine, 10) : null;
+  if (ay != null && (isNaN(ay) || ay < yearMin || ay > yearMax)) {
+    return { ok: false, message: "Anno Inizio deve essere tra " + yearMin + " e " + yearMax + "." };
+  }
+  if (am != null && (isNaN(am) || am < 1 || am > 12)) {
+    return { ok: false, message: "Mese Inizio deve essere tra 1 e 12." };
+  }
+  if (ey != null && (isNaN(ey) || ey < yearMin || ey > yearMax)) {
+    return { ok: false, message: "Anno Fine deve essere tra " + yearMin + " e " + yearMax + "." };
+  }
+  if (em != null && (isNaN(em) || em < 1 || em > 12)) {
+    return { ok: false, message: "Mese Fine deve essere tra 1 e 12." };
+  }
+  if (ay != null && ey != null && ay > ey) {
+    return { ok: false, message: "Anno Inizio non può essere maggiore di Anno Fine." };
+  }
+  if (ay != null && ey != null && ay === ey && am != null && em != null && am > em) {
+    return { ok: false, message: "Mese Inizio non può essere maggiore di Mese Fine se gli anni coincidono." };
+  }
+  const minA = params.importoMinimo !== "" && params.importoMinimo != null ? parseInt(params.importoMinimo, 10) : null;
+  const maxA = params.importoMassimo !== "" && params.importoMassimo != null ? parseInt(params.importoMassimo, 10) : null;
+  if (minA != null && (isNaN(minA) || minA < 0)) {
+    return { ok: false, message: "Importo Minimo deve essere un numero ≥ 0." };
+  }
+  if (maxA != null && (isNaN(maxA) || maxA < 0)) {
+    return { ok: false, message: "Importo Massimo deve essere un numero ≥ 0." };
+  }
+  if (minA != null && maxA != null && minA > maxA) {
+    return { ok: false, message: "Importo Minimo non può essere maggiore di Importo Massimo." };
+  }
+  return { ok: true, message: "" };
+}
+
+/**
+ * Costruisce il body per POST /IT-rmv a partire da params e coordinate.
+ */
+function bodyRicercaFromParams(params, lat, lng) {
+  var body = {
+    property_type: params.tipoImmobile || CONFIG.DEFAULT_PROPERTY_TYPE,
+    latitude: normalizzaCoordinata(lat),
+    longitude: normalizzaCoordinata(lng)
+  };
+  if (params.raggio) body.search_radius = parseInt(params.raggio, 10);
+  if (params.importoMinimo) body.min_amount = parseInt(params.importoMinimo, 10);
+  if (params.importoMassimo) body.max_amount = parseInt(params.importoMassimo, 10);
+  if (params.annoInizio) body.start_year = parseInt(params.annoInizio, 10);
+  if (params.meseInizio) body.start_month = parseInt(params.meseInizio, 10);
+  if (params.annoFine) body.end_year = parseInt(params.annoFine, 10);
+  if (params.meseFine) body.end_month = parseInt(params.meseFine, 10);
+  return body;
+}
+
 function cercaCompravendite() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const ui = SpreadsheetApp.getUi();
   
   // Leggi parametri dal foglio Config
   const params = leggiConfig(ss);
+  
+  // Validazione filtri (anno/mese, importi)
+  const valid = validazioneFiltriRicerca(params);
+  if (!valid.ok) {
+    ui.alert("⚠️ Config non valida\n\n" + valid.message);
+    return;
+  }
   
   // Costruisci il body della richiesta
   const body = {
@@ -185,6 +286,8 @@ function cercaCompravendite() {
     ui.alert("❌ Errore API: " + (response.message || "Errore sconosciuto"));
     return;
   }
+  
+  addToTotalApiCalls(1);
   
   // Parsa i risultati — struttura: data[].data[].units[]
   const compravendite = parsaCompravendite(response);
@@ -245,6 +348,127 @@ function cercaCompravendite() {
 }
 
 // ============================================================
+// 1b. CERCA COMPRAVENDITE CON GRIGLIA
+// ============================================================
+
+function stimaGriglia() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ui = SpreadsheetApp.getUi();
+  var bounds = getBoundsFromConfig(ss);
+  if (!bounds) {
+    ui.alert("⚠️ Griglia\n\nConfigura l'area: imposta 'Area griglia' (es. milano_comune) oppure Lat Nord/Sud, Lon Ovest/Est nel foglio Config.");
+    return;
+  }
+  var params = leggiConfig(ss);
+  var raggio = params.raggio ? parseInt(params.raggio, 10) : CONFIG.DEFAULT_RADIUS;
+  var points = calcGridPoints(bounds, raggio, 0.7);
+  var numChiamate = points.length;
+  var pricing = getPrice(numChiamate);
+  ui.alert(
+    "Stima griglia\n\n" +
+    "Punti griglia: " + numChiamate + "\n" +
+    "Chiamate API: " + numChiamate + " (1 tipo immobile)\n" +
+    "Costo stimato: €" + pricing.total.toFixed(2) + " (tier " + pricing.tier + ", €" + pricing.unit + "/chiamata)\n\n" +
+    "Per eseguire la ricerca usa 'Cerca Compravendite (griglia)'."
+  );
+}
+
+function cercaCompravenditeGriglia() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ui = SpreadsheetApp.getUi();
+  var params = leggiConfig(ss);
+  var valid = validazioneFiltriRicerca(params);
+  if (!valid.ok) {
+    ui.alert("⚠️ Config non valida\n\n" + valid.message);
+    return;
+  }
+  var bounds = getBoundsFromConfig(ss);
+  if (!bounds) {
+    ui.alert("⚠️ Griglia\n\nConfigura l'area: imposta 'Area griglia' (es. milano_comune) oppure Lat Nord/Sud, Lon Ovest/Est nel foglio Config.");
+    return;
+  }
+  var raggio = params.raggio ? parseInt(params.raggio, 10) : CONFIG.DEFAULT_RADIUS;
+  var points = calcGridPoints(bounds, raggio, 0.7);
+  var numChiamate = points.length;
+  var pricing = getPrice(numChiamate);
+  var confirm = ui.alert(
+    "Cerca con griglia",
+    "Verranno effettuate " + numChiamate + " chiamate API.\nCosto stimato: €" + pricing.total.toFixed(2) + " (tier " + pricing.tier + ").\n\nContinuare?",
+    ui.ButtonSet.YES_NO
+  );
+  if (confirm !== ui.Button.YES) return;
+
+  var allCompravendite = [];
+  var seenKeycodes = {};
+  var delayMs = 700;
+  for (var p = 0; p < points.length; p++) {
+    var body = bodyRicercaFromParams(params, points[p].lat, points[p].lng);
+    var response = chiamaAPI("POST", CONFIG.REALESTATE_URL, body);
+    if (response && response.success) {
+      var list = parsaCompravendite(response);
+      for (var i = 0; i < list.length; i++) {
+        var k = list[i].keycode || "";
+        if (k && seenKeycodes[k]) continue;
+        if (k) seenKeycodes[k] = true;
+        allCompravendite.push(list[i]);
+      }
+    }
+    if (p < points.length - 1) Utilities.sleep(delayMs);
+  }
+  
+  addToTotalApiCalls(points.length);
+
+  if (allCompravendite.length === 0) {
+    ui.alert("ℹ️ Nessuna compravendita trovata con i parametri della griglia.");
+    return;
+  }
+
+  var sh = getOrCreateSheet(ss, CONFIG.SHEET_COMPRAVENDITE);
+  var startRow = 2;
+  if (sh.getLastRow() >= 2) {
+    sh.getRange(2, 1, sh.getLastRow(), sh.getLastColumn()).clear();
+  }
+  var rows = [];
+  for (var r = 0; r < allCompravendite.length; r++) {
+    var c = allCompravendite[r];
+    rows.push([
+      r + 1,
+      c.price || "",
+      c.property_sale_date || "",
+      c.property_sale_year || "",
+      c.property_sale_month || "",
+      c.address || "",
+      c.town || "",
+      c.province || "",
+      c.region || "",
+      c.omi_zone || "",
+      c.property_type || "",
+      c.property_type_detail || "",
+      c.category_cat || "",
+      c.market_sector || "",
+      c.property_sqm || "",
+      c.property_sqm_total || "",
+      c.estimate_property_sqm || "",
+      c.latitude || "",
+      c.longitude || "",
+      c.distance || "",
+      c.belfior_code || "",
+      c.office_code || "",
+      c.keycode || "",
+      c.mortgage_guarantee || "",
+      c.id_property || "",
+      c.total_property || ""
+    ]);
+  }
+  var numCols = rows[0].length;
+  sh.getRange(startRow, 1, rows.length, numCols).setValues(rows);
+  sh.getRange(startRow, 2, rows.length, 1).setNumberFormat("€#,##0");
+
+  Logger.log("Griglia: " + numChiamate + " chiamate, " + allCompravendite.length + " compravendite, costo stimato €" + pricing.total.toFixed(2));
+  ui.alert("✅ Griglia completata!\n\nChiamate: " + numChiamate + "\nCompravendite (deduplicate): " + allCompravendite.length + "\nCosto stimato: €" + pricing.total.toFixed(2) + "\n\nRisultati nel foglio '" + CONFIG.SHEET_COMPRAVENDITE + "'.");
+}
+
+// ============================================================
 // 2. ARRICCHISCI CON CATASTO (Prospetto Catastale)
 // ============================================================
 
@@ -262,16 +486,39 @@ function arricchisciCatasto(rigaTarget) {
   let riga = rigaTarget;
   if (!riga) {
     const activeRange = ss.getActiveRange();
-    if (activeRange && activeRange.getSheet().getName() === CONFIG.SHEET_COMPRAVENDITE) {
-      riga = activeRange.getRow();
+    const activeSheet = activeRange ? activeRange.getSheet().getName() : "";
+    const isCompravendite = activeSheet === CONFIG.SHEET_COMPRAVENDITE;
+    const suggestedRow = (activeRange && isCompravendite) ? activeRange.getRow() : 2;
+
+    if (!isCompravendite || !activeRange) {
+      // Foglio attivo non è Compravendite: chiedi numero di riga
+      const lastDataRow = shComp.getLastRow();
+      const defaultVal = lastDataRow >= 2 ? "2" : "2";
+      const input = ui.prompt(
+        "Numero riga da arricchire",
+        "Il foglio attivo non è 'Compravendite'.\n\nInserisci il numero di riga da arricchire (es. 2):\n(La riga 1 è l'intestazione.)",
+        ui.ButtonSet.OK_CANCEL
+      );
+      if (input.getSelectedButton() !== ui.Button.OK) return;
+      const num = parseInt(input.getResponseText().trim(), 10);
+      if (isNaN(num) || num < 2) {
+        ui.alert("⚠️ Inserisci un numero di riga valido (≥ 2).");
+        return;
+      }
+      riga = num;
     } else {
-      riga = 2; // prima riga di dati
+      // Conferma con anteprima: "Arricchirai la riga N – [Indirizzo], [Comune]. Continuare?"
+      const rowDataPreview = shComp.getRange(suggestedRow, 1, 1, shComp.getLastColumn()).getValues()[0];
+      const address = rowDataPreview[5] || "N/D";
+      const town = rowDataPreview[6] || "N/D";
+      const confirm = ui.alert(
+        "Conferma riga",
+        "Arricchirai la riga " + suggestedRow + ":\n  " + address + "\n  " + town + "\n\nContinuare?",
+        ui.ButtonSet.YES_NO
+      );
+      if (confirm !== ui.Button.YES) return;
+      riga = suggestedRow;
     }
-  }
-  
-  if (riga < 2) {
-    ui.alert("⚠️ Seleziona una riga di dati (non l'intestazione).");
-    return;
   }
   
   // Leggi i dati della compravendita dalla riga
@@ -886,15 +1133,16 @@ function leggiConfig(ss) {
   const sh = ss.getSheetByName(CONFIG.SHEET_CONFIG);
   if (!sh) return {};
   
-  const data = sh.getRange(2, 1, 20, 2).getValues();
+  const data = sh.getRange(2, 1, 25, 2).getValues();
   const config = {};
   
-  // Mappa i valori per posizione
+  // Mappa i valori per posizione (allineata a setupFogli)
   const mapping = [
     "latitudine", "longitudine", "raggio", "tipoImmobile",
     "importoMinimo", "importoMassimo", "annoInizio", "meseInizio",
-    "annoFine", "meseFine", "_separator",
-    "cfPiva", "provinciaPersona", "tipoCatasto"
+    "annoFine", "meseFine", "_sep1",
+    "areaGriglia", "latNord", "latSud", "lonOvest", "lonEst",
+    "_sep2", "cfPiva", "provinciaPersona", "tipoCatasto"
   ];
   
   for (let i = 0; i < mapping.length && i < data.length; i++) {
@@ -966,6 +1214,113 @@ function derivaCodiceProvincia(testo) {
   };
   
   return mappa[t] || t.substring(0, 2);
+}
+
+// ============================================================
+// GRIGLIA E PRICING
+// ============================================================
+
+var PROP_KEY_TOTAL_CALLS = "OPENAPI_TOTAL_CALLS";
+
+function getTotalApiCalls() {
+  var props = PropertiesService.getScriptProperties();
+  var v = props.getProperty(PROP_KEY_TOTAL_CALLS);
+  return v ? parseInt(v, 10) : 0;
+}
+
+function addToTotalApiCalls(count) {
+  var n = Math.max(0, parseInt(count, 10) || 0);
+  if (n <= 0) return;
+  var props = PropertiesService.getScriptProperties();
+  var current = getTotalApiCalls();
+  props.setProperty(PROP_KEY_TOTAL_CALLS, String(current + n));
+}
+
+/**
+ * Restituisce prezzo unitario, totale e tier per un numero di chiamate.
+ * Stima basata su tier OpenAPI.it; verificare con documentazione.
+ */
+function getPrice(calls) {
+  var n = Math.max(0, parseInt(calls, 10) || 0);
+  var t = PRICING[0];
+  for (var i = 0; i < PRICING.length; i++) {
+    if (n >= PRICING[i].min && n <= PRICING[i].max) {
+      t = PRICING[i];
+      break;
+    }
+  }
+  return { unit: t.price, total: n * t.price, tier: t.label, calls: n };
+}
+
+/**
+ * Report costi API: totale chiamate nel progetto, costo stimato, dettaglio per tier.
+ */
+function reportCostiAPI() {
+  var ui = SpreadsheetApp.getUi();
+  var total = getTotalApiCalls();
+  var pricing = getPrice(total);
+  var msg = "Totale chiamate effettuate (Real Estate IT-rmv): " + total + "\n\n";
+  msg += "Tier attuale: " + pricing.tier + " (€" + pricing.unit.toFixed(2) + "/chiamata)\n";
+  msg += "Costo stimato totale: €" + pricing.total.toFixed(2) + "\n\n";
+  msg += "Dettaglio tier:\n";
+  for (var i = 0; i < PRICING.length; i++) {
+    var p = PRICING[i];
+    var range = p.max === Infinity ? (p.min + "+") : (p.min + "-" + p.max);
+    var mark = (p.label === pricing.tier) ? "  ← attuale" : "";
+    msg += "  " + p.label + " (" + range + "): €" + p.price.toFixed(2) + "/chiamata" + mark + "\n";
+  }
+  msg += "\n(Stima basata su tier OpenAPI.it; verificare con fatturazione.)";
+  ui.alert("Report costi API", msg, ui.ButtonSet.OK);
+}
+
+function metersToDegLat(m) {
+  return m / 111320;
+}
+
+function metersToDegLng(m, lat) {
+  return m / (111320 * Math.cos(lat * Math.PI / 180));
+}
+
+/**
+ * Calcola i punti (lat, lng) della griglia per bounds e raggio.
+ * overlap: 0.7 = 70% sovrapposizione tra cerchi.
+ * @return Array di { lat: number, lng: number }
+ */
+function calcGridPoints(bounds, radiusM, overlap) {
+  if (!overlap) overlap = 0.7;
+  var step = radiusM * 2 * overlap;
+  var latStep = metersToDegLat(step);
+  var midLat = (bounds.north + bounds.south) / 2;
+  var lngStep = metersToDegLng(step, midLat);
+  var points = [];
+  var lat = bounds.south;
+  while (lat <= bounds.north) {
+    var lng = bounds.west;
+    while (lng <= bounds.east) {
+      points.push({ lat: lat, lng: lng });
+      lng += lngStep;
+    }
+    lat += latStep;
+  }
+  return points;
+}
+
+/**
+ * Restituisce bounds per la griglia: da area predefinita o da Config (lat nord/sud, lon ovest/est).
+ * @return { north, south, west, east } o null se non configurabile
+ */
+function getBoundsFromConfig(ss) {
+  var params = leggiConfig(ss);
+  var latN = params.latNord !== "" && params.latNord != null ? parseFloat(String(params.latNord).replace(",", ".")) : null;
+  var latS = params.latSud !== "" && params.latSud != null ? parseFloat(String(params.latSud).replace(",", ".")) : null;
+  var lonW = params.lonOvest !== "" && params.lonOvest != null ? parseFloat(String(params.lonOvest).replace(",", ".")) : null;
+  var lonE = params.lonEst !== "" && params.lonEst != null ? parseFloat(String(params.lonEst).replace(",", ".")) : null;
+  if (latN != null && !isNaN(latN) && latS != null && !isNaN(latS) && lonW != null && !isNaN(lonW) && lonE != null && !isNaN(lonE)) {
+    return { north: latN, south: latS, west: lonW, east: lonE };
+  }
+  var areaKey = (params.areaGriglia || "").toString().trim().toLowerCase().replace(/\s/g, "_");
+  if (AREE[areaKey]) return AREE[areaKey];
+  return null;
 }
 
 // ============================================================
