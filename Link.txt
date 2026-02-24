@@ -1,1 +1,2 @@
+#link foglio google sheet:
 https://docs.google.com/spreadsheets/d/1hcHI_e3uumlERecbtT_dd6rrc519OtZ17sCNVsSYoRk/edit?usp=drive_link
