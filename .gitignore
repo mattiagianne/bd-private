@@ -1,0 +1,16 @@
+# Build output (non committare)
+webapp-gis/dist/
+
+# File GeoJSON troppo grandi (ora si usano split per provincia)
+webapp-gis/public/geojson/comuni_dettagliata.json
+webapp-gis/public/geojson/province_dettagliata.json
+
+# Shapefile ISTAT molto pesanti (superano 100 MB su GitHub)
+GIS/ISTAT/01_Dettagliata/Com01012025/Com01012025_WGS84.shp
+GIS/ISTAT/01_Dettagliata/Com01012025/Com01012025_WGS84.dbf
+
+node_modules/
+.env
+.env.local
+*.log
+debug-*.log
