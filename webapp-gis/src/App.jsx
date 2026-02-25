@@ -823,7 +823,15 @@ export default function App() {
                     )}
                   </>
                 ) : (
-                  <p style={{ margin: 0 }}>{saveResult.message || 'Errore'}</p>
+                  <>
+                    <p style={{ margin: 0 }}>{saveResult.message || 'Errore'}</p>
+                    {saveResult.preview != null && saveResult.preview !== '' && (
+                      <p style={{ margin: '6px 0 0', fontSize: 11, wordBreak: 'break-all', opacity: 0.9 }}>
+                        Anteprima risposta: {saveResult.preview}
+                        {saveResult.debug != null ? ` [HTTP ${saveResult.debug}]` : ''}
+                      </p>
+                    )}
+                  </>
                 )}
               </div>
             )}

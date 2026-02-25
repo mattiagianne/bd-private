@@ -49,9 +49,12 @@ export default async function handler(req, res) {
     try {
       data = JSON.parse(text);
     } catch (_) {
+      const preview = text.slice(0, 400).replace(/\s+/g, " ").trim();
       return res.status(502).json({
         success: false,
-        message: "Risposta non valida dallo script",
+        message: "Risposta non valida dallo script (non è JSON).",
+        debug: response.status,
+        preview: preview ? preview.slice(0, 300) : "(vuoto)",
       });
     }
     if (!response.ok) {
