@@ -90,7 +90,8 @@ function setupFogli() {
     "Superficie mq", "Superficie Totale mq", "Sup. Stimata mq",
     "Latitudine", "Longitudine", "Distanza (m)",
     "Codice Belfiore", "Codice Ufficio", "Keycode",
-    "Garanzia Ipotecaria", "ID Proprietà", "Tot. Proprietà"
+    "Garanzia Ipotecaria", "ID Proprietà", "Tot. Proprietà",
+    "BatchId", "DataRicerca", "Area"
   ];
   sh.getRange(1, 1, 1, headerCompravendite.length).setValues([headerCompravendite]);
   sh.getRange(1, 1, 1, headerCompravendite.length)
@@ -298,51 +299,22 @@ function cercaCompravendite() {
     return;
   }
   
-  // Scrivi nel foglio
+  // Append nel foglio (mai clear: politica append-only)
   const sh = getOrCreateSheet(ss, CONFIG.SHEET_COMPRAVENDITE);
-  const startRow = 2;
-  
-  // Pulisci dati precedenti (mantieni header)
-  if (sh.getLastRow() > 1) {
-    sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).clear();
+  if (sh.getLastColumn() < 30) {
+    sh.getRange(1, 28, 1, 30).setValues([["BatchId", "DataRicerca", "Area"]]);
+    sh.getRange(1, 28, 1, 30).setBackground("#1a73e8").setFontColor("white").setFontWeight("bold");
   }
-  
-  const rows = compravendite.map((c, i) => [
-    i + 1,
-    c.price || "",
-    c.property_sale_date || "",
-    c.property_sale_year || "",
-    c.property_sale_month || "",
-    c.address || "",
-    c.town || "",
-    c.province || "",
-    c.region || "",
-    c.omi_zone || "",
-    c.property_type || "",
-    c.property_type_detail || "",
-    c.category_cat || "",
-    c.market_sector || "",
-    c.property_sqm || "",
-    c.property_sqm_total || "",
-    c.estimate_property_sqm || "",
-    c.latitude || "",
-    c.longitude || "",
-    c.distance || "",
-    c.belfior_code || "",
-    c.office_code || "",
-    c.keycode || "",
-    c.mortgage_guarantee || "",
-    c.id_property || "",
-    c.total_property || ""
-  ]);
-  
-  sh.getRange(startRow, 1, rows.length, rows[0].length).setValues(rows);
-  
-  // Formatta colonna prezzo
-  sh.getRange(startRow, 2, rows.length, 1).setNumberFormat("€#,##0");
-  
+  const startRow = sh.getLastRow() >= 1 ? sh.getLastRow() + 1 : 2;
+  const batchId = Utilities.getUuid();
+  const dataRicerca = new Date().toISOString ? new Date().toISOString().slice(0, 19) : String(new Date().getTime());
+  const areaLabel = "Punto singolo";
+  const rows = compravendite.map((c, i) => rowCompravenditeWithBatch(c, i + 1, batchId, dataRicerca, areaLabel));
+  const endRow = startRow + rows.length - 1;
+  sh.getRange(startRow, 1, endRow, 30).setValues(rows);
+  sh.getRange(startRow, 2, endRow, 2).setNumberFormat("€#,##0");
   ui.alert("✅ Trovate " + compravendite.length + " compravendite!\n\n" +
-           "Risultati scritti nel foglio '" + CONFIG.SHEET_COMPRAVENDITE + "'.");
+           "Risultati aggiunti in append nel foglio '" + CONFIG.SHEET_COMPRAVENDITE + "'.");
   
   return compravendite;
 }
@@ -373,6 +345,107 @@ function stimaGriglia() {
   );
 }
 
+/** Costruisce una riga Compravendite (30 colonne) con metadati batch. */
+function rowCompravenditeWithBatch(c, rowIndex, batchId, dataRicerca, area) {
+  return [
+    rowIndex,
+    c.price || "",
+    c.property_sale_date || "",
+    c.property_sale_year || "",
+    c.property_sale_month || "",
+    c.address || "",
+    c.town || "",
+    c.province || "",
+    c.region || "",
+    c.omi_zone || "",
+    c.property_type || "",
+    c.property_type_detail || "",
+    c.category_cat || "",
+    c.market_sector || "",
+    c.property_sqm || "",
+    c.property_sqm_total || "",
+    c.estimate_property_sqm || "",
+    c.latitude || "",
+    c.longitude || "",
+    c.distance || "",
+    c.belfior_code || "",
+    c.office_code || "",
+    c.keycode || "",
+    c.mortgage_guarantee || "",
+    c.id_property || "",
+    c.total_property || "",
+    batchId || "",
+    dataRicerca || "",
+    area || ""
+  ];
+}
+
+/**
+ * Esegue la griglia RMV e scrive in append nel foglio Compravendite (mai clear).
+ * @param {Spreadsheet} ss - Foglio attivo
+ * @param {Array<{lat: number, lng: number}>} points - Centri griglia
+ * @param {number} radiusM - Raggio in metri (50-20000)
+ * @param {Object} paramsOverride - Override parametri (opzionale)
+ * @param {Object} options - { areaLabel: string } per colonna Area
+ * @returns {{ numChiamate: number, numCompravendite: number, costoStimato: number, tier: string }}
+ */
+function eseguiGrigliaRMV_(ss, points, radiusM, paramsOverride, options) {
+  options = options || {};
+  var params = leggiConfig(ss);
+  if (paramsOverride) {
+    for (var k in paramsOverride) params[k] = paramsOverride[k];
+  }
+  params.raggio = radiusM;
+
+  var batchId = Utilities.getUuid();
+  var dataRicerca = new Date().toISOString ? new Date().toISOString().slice(0, 19) : (new Date().getTime().toString());
+  var areaLabel = options.areaLabel || "Griglia";
+
+  var allCompravendite = [];
+  var seenKeycodes = {};
+  var delayMs = 700;
+  for (var p = 0; p < points.length; p++) {
+    var body = bodyRicercaFromParams(params, points[p].lat, points[p].lng);
+    var response = chiamaAPI("POST", CONFIG.REALESTATE_URL, body);
+    if (response && response.success) {
+      var list = parsaCompravendite(response);
+      for (var i = 0; i < list.length; i++) {
+        var k = list[i].keycode || "";
+        if (k && seenKeycodes[k]) continue;
+        if (k) seenKeycodes[k] = true;
+        allCompravendite.push(list[i]);
+      }
+    }
+    if (p < points.length - 1) Utilities.sleep(delayMs);
+  }
+  addToTotalApiCalls(points.length);
+
+  var numChiamate = points.length;
+  var pricing = getPrice(numChiamate);
+
+  if (allCompravendite.length === 0) {
+    return { numChiamate: numChiamate, numCompravendite: 0, costoStimato: pricing.total, tier: pricing.tier };
+  }
+
+  var sh = getOrCreateSheet(ss, CONFIG.SHEET_COMPRAVENDITE);
+  if (sh.getLastColumn() < 30) {
+    sh.getRange(1, 28, 1, 30).setValues([["BatchId", "DataRicerca", "Area"]]);
+    sh.getRange(1, 28, 1, 30).setBackground("#1a73e8").setFontColor("white").setFontWeight("bold");
+  }
+  var startRow = sh.getLastRow() >= 1 ? sh.getLastRow() + 1 : 2;
+  var rows = [];
+  for (var r = 0; r < allCompravendite.length; r++) {
+    rows.push(rowCompravenditeWithBatch(allCompravendite[r], r + 1, batchId, dataRicerca, areaLabel));
+  }
+  var numCols = 30;
+  var endRow = startRow + rows.length - 1;
+  sh.getRange(startRow, 1, endRow, numCols).setValues(rows);
+  sh.getRange(startRow, 2, endRow, 2).setNumberFormat("€#,##0");
+
+  Logger.log("Griglia: " + numChiamate + " chiamate, " + allCompravendite.length + " compravendite (append), costo stimato €" + pricing.total.toFixed(2));
+  return { numChiamate: numChiamate, numCompravendite: allCompravendite.length, costoStimato: pricing.total, tier: pricing.tier };
+}
+
 function cercaCompravenditeGriglia() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var ui = SpreadsheetApp.getUi();
@@ -398,74 +471,75 @@ function cercaCompravenditeGriglia() {
   );
   if (confirm !== ui.Button.YES) return;
 
-  var allCompravendite = [];
-  var seenKeycodes = {};
-  var delayMs = 700;
-  for (var p = 0; p < points.length; p++) {
-    var body = bodyRicercaFromParams(params, points[p].lat, points[p].lng);
-    var response = chiamaAPI("POST", CONFIG.REALESTATE_URL, body);
-    if (response && response.success) {
-      var list = parsaCompravendite(response);
-      for (var i = 0; i < list.length; i++) {
-        var k = list[i].keycode || "";
-        if (k && seenKeycodes[k]) continue;
-        if (k) seenKeycodes[k] = true;
-        allCompravendite.push(list[i]);
-      }
-    }
-    if (p < points.length - 1) Utilities.sleep(delayMs);
-  }
-  
-  addToTotalApiCalls(points.length);
-
-  if (allCompravendite.length === 0) {
+  var result = eseguiGrigliaRMV_(ss, points, raggio, null, { areaLabel: params.areaGriglia || "Griglia Config" });
+  if (result.numCompravendite === 0) {
     ui.alert("ℹ️ Nessuna compravendita trovata con i parametri della griglia.");
     return;
   }
+  ui.alert("✅ Griglia completata!\n\nChiamate: " + result.numChiamate + "\nCompravendite (deduplicate): " + result.numCompravendite + "\nCosto stimato: €" + result.costoStimato.toFixed(2) + "\n\nRisultati aggiunti in append nel foglio '" + CONFIG.SHEET_COMPRAVENDITE + "'.");
+}
 
-  var sh = getOrCreateSheet(ss, CONFIG.SHEET_COMPRAVENDITE);
-  var startRow = 2;
-  if (sh.getLastRow() >= 2) {
-    sh.getRange(2, 1, sh.getLastRow(), sh.getLastColumn()).clear();
-  }
-  var rows = [];
-  for (var r = 0; r < allCompravendite.length; r++) {
-    var c = allCompravendite[r];
-    rows.push([
-      r + 1,
-      c.price || "",
-      c.property_sale_date || "",
-      c.property_sale_year || "",
-      c.property_sale_month || "",
-      c.address || "",
-      c.town || "",
-      c.province || "",
-      c.region || "",
-      c.omi_zone || "",
-      c.property_type || "",
-      c.property_type_detail || "",
-      c.category_cat || "",
-      c.market_sector || "",
-      c.property_sqm || "",
-      c.property_sqm_total || "",
-      c.estimate_property_sqm || "",
-      c.latitude || "",
-      c.longitude || "",
-      c.distance || "",
-      c.belfior_code || "",
-      c.office_code || "",
-      c.keycode || "",
-      c.mortgage_guarantee || "",
-      c.id_property || "",
-      c.total_property || ""
-    ]);
-  }
-  var numCols = rows[0].length;
-  sh.getRange(startRow, 1, rows.length, numCols).setValues(rows);
-  sh.getRange(startRow, 2, rows.length, 1).setNumberFormat("€#,##0");
+// ============================================================
+// Web App: doPost (chiamata da Vercel /api/salva-griglia)
+// ============================================================
 
-  Logger.log("Griglia: " + numChiamate + " chiamate, " + allCompravendite.length + " compravendite, costo stimato €" + pricing.total.toFixed(2));
-  ui.alert("✅ Griglia completata!\n\nChiamate: " + numChiamate + "\nCompravendite (deduplicate): " + allCompravendite.length + "\nCosto stimato: €" + pricing.total.toFixed(2) + "\n\nRisultati nel foglio '" + CONFIG.SHEET_COMPRAVENDITE + "'.");
+/**
+ * Endpoint Web App: riceve centri + raggio, esegue griglia RMV, append su Compravendite.
+ * Payload: { token, centers: [{ latitude, longitude }], search_radius_m [, area ] }
+ */
+function doPost(e) {
+  var output;
+  try {
+    var body = e && e.postData && e.postData.contents ? JSON.parse(e.postData.contents) : null;
+    if (!body) {
+      return jsonResponse({ success: false, message: "Body JSON mancante" }, 400);
+    }
+    var token = body.token;
+    var expectedToken = PropertiesService.getScriptProperties().getProperty("WEBAPP_TOKEN");
+    if (!expectedToken || token !== expectedToken) {
+      return jsonResponse({ success: false, message: "Token non valido" }, 401);
+    }
+    var centers = body.centers;
+    if (!Array.isArray(centers) || centers.length === 0) {
+      return jsonResponse({ success: false, message: "centers deve essere un array non vuoto" }, 400);
+    }
+    if (centers.length > 5000) {
+      return jsonResponse({ success: false, message: "Troppi centri (max 5000)" }, 400);
+    }
+    var searchRadiusM = parseInt(body.search_radius_m, 10);
+    if (isNaN(searchRadiusM) || searchRadiusM < 50 || searchRadiusM > 20000) {
+      return jsonResponse({ success: false, message: "search_radius_m deve essere tra 50 e 20000" }, 400);
+    }
+    var points = centers.map(function(c) {
+      return { lat: Number(c.latitude), lng: Number(c.longitude) };
+    });
+    var areaLabel = (body.area && typeof body.area === "string") ? body.area : "Mappa";
+    var paramsOverride = null;
+    var validTypes = ["immobili_residenziali", "immobili_non_residenziali", "pertinenziali"];
+    if (body.property_type && validTypes.indexOf(body.property_type) !== -1) {
+      paramsOverride = { tipoImmobile: body.property_type };
+    }
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var result = eseguiGrigliaRMV_(ss, points, searchRadiusM, paramsOverride, { areaLabel: areaLabel });
+    return jsonResponse({
+      success: true,
+      numChiamate: result.numChiamate,
+      numCompravendite: result.numCompravendite,
+      costoStimato: result.costoStimato,
+      tier: result.tier,
+      message: "Salvato in Compravendite"
+    });
+  } catch (err) {
+    Logger.log("doPost error: " + err.toString());
+    return jsonResponse({ success: false, message: err.toString() || "Errore interno" }, 500);
+  }
+}
+
+function jsonResponse(obj, statusCode) {
+  var code = statusCode || 200;
+  return ContentService
+    .createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
 }
 
 // ============================================================
@@ -767,13 +841,10 @@ function ricercaPersona() {
     ui.alert("ℹ️ Nessun immobile trovato per CF: " + cfPiva + " in provincia " + provincia);
     return;
   }
-  
-  // Pulisci e riscrivi
-  if (shPersona.getLastRow() > 1) {
-    shPersona.getRange(2, 1, shPersona.getLastRow() - 1, shPersona.getLastColumn()).clear();
-  }
-  
-  shPersona.getRange(2, 1, righe.length, righe[0].length).setValues(righe);
+  // Append (mai clear: politica append-only)
+  const startRow = Math.max(2, shPersona.getLastRow() + 1);
+  const endRow = startRow + righe.length - 1;
+  shPersona.getRange(startRow, 1, endRow, righe[0].length).setValues(righe);
   
   ui.alert("✅ Trovati " + righe.length + " immobili intestati a " + cfPiva + "!\n\n" +
            "Risultati nel foglio '" + CONFIG.SHEET_PERSONA + "'.");

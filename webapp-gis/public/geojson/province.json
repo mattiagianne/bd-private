@@ -1,0 +1,21 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": { "DEN_PCM": "Milano", "SIGLA": "MI", "COD_PROV": 15 },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[8.85, 45.30], [9.55, 45.30], [9.55, 45.65], [8.85, 45.65], [8.85, 45.30]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "DEN_PCM": "Pisa", "SIGLA": "PI", "COD_PROV": 50 },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[10.05, 43.20], [10.95, 43.20], [10.95, 43.85], [10.05, 43.85], [10.05, 43.20]]]
+      }
+    }
+  ]
+}

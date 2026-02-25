@@ -1,0 +1,33 @@
+{
+  "name": "gis-viewer",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "convert-gis": "node scripts/convert-shp-to-geojson.cjs"
+  },
+  "dependencies": {
+    "@deck.gl/core": "^9.0.0",
+    "@deck.gl/layers": "^9.0.0",
+    "@deck.gl/mapbox": "^9.0.0",
+    "@turf/area": "^7.3.4",
+    "@turf/boolean-intersects": "^7.3.4",
+    "@turf/boolean-point-in-polygon": "^7.3.4",
+    "@turf/centroid": "^7.3.4",
+    "@turf/circle": "^7.3.4",
+    "@turf/helpers": "^7.3.4",
+    "maplibre-gl": "^4.7.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-map-gl": "^7.1.7"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.3",
+    "proj4": "^2.20.2",
+    "shapefile": "^0.6.6",
+    "vite": "^5.4.10"
+  }
+}
