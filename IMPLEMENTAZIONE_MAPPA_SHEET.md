@@ -196,3 +196,5 @@ Testo da mettere in README o in una pagina “Help” della webapp:
 - **Apps Script** (Script Properties): `WEBAPP_TOKEN` — valore segreto condiviso con Vercel
 - **Vercel**: `GOOGLE_SCRIPT_URL` (URL Web App), `GOOGLE_SCRIPT_TOKEN` (stesso valore di WEBAPP_TOKEN)
 - **Webapp (build)**: `VITE_GOOGLE_SHEET_URL` — link al foglio per il pulsante "Apri Google Sheet"
+
+**Setup completo (sandbox e produzione):** vedi [SETUP_SANDBOX_E_VERCEL.md](SETUP_SANDBOX_E_VERCEL.md) per la guida passo-passo (Google Sheet, Apps Script, Git, Vercel, test e passaggio a produzione).

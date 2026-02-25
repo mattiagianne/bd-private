@@ -16,7 +16,7 @@ todos:
     status: completed
   - id: doc-guida
     content: Documentare flusso e guida utente (README o Help)
-    status: in_progress
+    status: completed
 isProject: false
 ---
 
