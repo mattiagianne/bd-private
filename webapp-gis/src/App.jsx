@@ -166,15 +166,6 @@ export default function App() {
 
   useEffect(() => {
     const key = dettaglioConfini;
-    if (dataCacheRef.current[key]) {
-      setProvinceList(dataCacheRef.current[key].province);
-      setComuniList(dataCacheRef.current[key].comuni);
-      setSelectedProvincia('');
-      setSelectedComune('');
-      setHighlightFeature(null);
-      return;
-    }
-
     const suffix =
       dettaglioConfini === 'generale'
         ? '_generale'
@@ -182,13 +173,47 @@ export default function App() {
           ? '_dettagliata'
           : '';
     const provFile = '/geojson/province' + suffix + '.json';
-    const comuniFile = '/geojson/comuni' + suffix + '.json';
+    const isDettagliata = dettaglioConfini === 'dettagliata';
+
+    if (dataCacheRef.current[key] && dataCacheRef.current[key].province) {
+      setProvinceList(dataCacheRef.current[key].province);
+      if (!isDettagliata) {
+        setComuniList(dataCacheRef.current[key].comuni ?? []);
+        setSelectedProvincia('');
+        setSelectedComune('');
+        setHighlightFeature(null);
+      } else {
+        setComuniList([]);
+        setHighlightFeature(null);
+      }
+      return;
+    }
 
     const load = (url) =>
       fetch(url)
         .then((r) => (r.ok ? r.json() : null))
         .catch(() => null);
 
+    if (isDettagliata) {
+      load('/geojson/province_dettagliata_index.json').then((index) => {
+        if (index && Array.isArray(index)) {
+          const provList = index.map((p) => ({ sigla: p.sigla || '', name: p.name || '', feature: null }));
+          provList.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'it'));
+          setProvinceList(provList);
+          dataCacheRef.current[key] = dataCacheRef.current[key] || {};
+          dataCacheRef.current[key].province = provList;
+          dataCacheRef.current[key].comuniByProv = dataCacheRef.current[key].comuniByProv || {};
+          dataCacheRef.current[key].provinceBySigla = dataCacheRef.current[key].provinceBySigla || {};
+        }
+        setComuniList([]);
+        setSelectedProvincia('');
+        setSelectedComune('');
+        setHighlightFeature(null);
+      });
+      return;
+    }
+
+    const comuniFile = '/geojson/comuni' + suffix + '.json';
     Promise.all([load(provFile), load(comuniFile)]).then(([provGeo, comuniGeo]) => {
       if (!provGeo && !comuniGeo && suffix) {
         load('/geojson/province.json').then((p) => {
@@ -255,11 +280,61 @@ export default function App() {
           setComuniList([]);
         }
       }
+      setSelectedProvincia('');
+      setSelectedComune('');
+      setHighlightFeature(null);
     });
-    setSelectedProvincia('');
-    setSelectedComune('');
-    setHighlightFeature(null);
   }, [dettaglioConfini]);
+
+  // Dettagliata: carica boundary provincia e comuni solo per la provincia selezionata (file per provincia)
+  useEffect(() => {
+    if (dettaglioConfini !== 'dettagliata' || !selectedProvincia) {
+      if (dettaglioConfini === 'dettagliata') setComuniList([]);
+      return;
+    }
+    const key = 'dettagliata';
+    const cache = dataCacheRef.current[key];
+    const cachedProv = cache?.provinceBySigla?.[selectedProvincia];
+    const cachedComuni = cache?.comuniByProv?.[selectedProvincia];
+    if (cachedProv) {
+      setHighlightFeature(cachedProv);
+      const b = getBounds(cachedProv);
+      if (b && mapRef.current?.getMap) mapRef.current.getMap().fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 40, maxZoom: 10 });
+    }
+    if (cachedComuni) {
+      setComuniList(cachedComuni);
+      return;
+    }
+    const siglaSafe = selectedProvincia.replace(/[^A-Z0-9]/gi, '_');
+    const provUrl = '/geojson/province_dettagliata_' + siglaSafe + '.json';
+    const comuniUrl = '/geojson/comuni_dettagliata_' + siglaSafe + '.json';
+    const load = (url) => fetch(url).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    const needProv = !cachedProv;
+    Promise.all([
+      needProv ? load(provUrl) : Promise.resolve(null),
+      load(comuniUrl),
+    ]).then(([provGeo, comuniGeo]) => {
+      const provFeature = (needProv && provGeo) ? (provGeo.features?.[0] || null) : cachedProv;
+      if (provFeature) {
+        setHighlightFeature(provFeature);
+        if (!dataCacheRef.current[key]) dataCacheRef.current[key] = {};
+        if (!dataCacheRef.current[key].provinceBySigla) dataCacheRef.current[key].provinceBySigla = {};
+        dataCacheRef.current[key].provinceBySigla[selectedProvincia] = provFeature;
+        const b = getBounds(provFeature);
+        if (b && mapRef.current?.getMap) mapRef.current.getMap().fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 40, maxZoom: 10 });
+      }
+      const list = (comuniGeo?.features || []).map((f) => ({
+        name: getComuneName(f),
+        prov: selectedProvincia,
+        feature: f,
+      }));
+      list.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'it'));
+      setComuniList(list);
+      if (!dataCacheRef.current[key]) dataCacheRef.current[key] = {};
+      if (!dataCacheRef.current[key].comuniByProv) dataCacheRef.current[key].comuniByProv = {};
+      dataCacheRef.current[key].comuniByProv[selectedProvincia] = list;
+    });
+  }, [dettaglioConfini, selectedProvincia]);
 
   const comuniFiltered = selectedProvincia
     ? comuniList.filter((c) => (c.prov || '').toUpperCase() === selectedProvincia.toUpperCase())
